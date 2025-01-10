@@ -2,7 +2,7 @@
 
 use std::ops::Bound;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -37,18 +37,36 @@ pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
 
 impl MemTable {
     /// Create a new mem-table.
-    pub fn create(_id: usize) -> Self {
-        unimplemented!()
+    pub fn create(id: usize) -> Self {
+        Self {
+            map: Arc::new(SkipMap::new()),
+            wal: None,
+            id,
+            approximate_size: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     /// Create a new mem-table with WAL
-    pub fn create_with_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn create_with_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        let wal = Wal::create(path)?;
+        Ok(Self {
+            map: Arc::new(SkipMap::new()),
+            wal: Some(wal),
+            id,
+            approximate_size: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     /// Create a memtable from WAL
-    pub fn recover_from_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn recover_from_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        let map = SkipMap::new();
+        let wal = Wal::recover(path, &map)?;
+        Ok(Self {
+            map: Arc::new(map),
+            wal: Some(wal),
+            id,
+            approximate_size: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     pub fn for_testing_put_slice(&self, key: &[u8], value: &[u8]) -> Result<()> {
@@ -68,8 +86,17 @@ impl MemTable {
     }
 
     /// Get a value by key.
-    pub fn get(&self, _key: &[u8]) -> Option<Bytes> {
-        unimplemented!()
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        match self.map.get(key) {
+            None => None,
+            Some(value) => {
+                if value.value().is_empty() {
+                    None
+                } else {
+                    Some(value.value().clone())
+                }
+            }
+        }
     }
 
     /// Put a key-value pair into the mem-table.
@@ -77,13 +104,35 @@ impl MemTable {
     /// In week 1, day 1, simply put the key-value pair into the skipmap.
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, modify the function to use the batch API.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        if let Some(ref wal) = self.wal {
+            wal.put(key, value)?;
+        }
+        self.map
+            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
+        self.approximate_size
+            .fetch_add(value.len() + key.len(), Ordering::Relaxed);
+        Ok(())
     }
 
     /// Implement this in week 3, day 5.
-    pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
-        unimplemented!()
+    pub fn put_batch(&self, data: &[(KeySlice, &[u8])]) -> Result<()> {
+        if let Some(ref wal) = self.wal {
+            let batch = data
+                .iter()
+                .map(|(key, value)| (key.raw_ref(), *value))
+                .collect::<Vec<_>>();
+            wal.put_batch(batch.as_slice())?;
+        }
+        for (key, value) in data {
+            self.map.insert(
+                Bytes::copy_from_slice(key.raw_ref()),
+                Bytes::copy_from_slice(value),
+            );
+        }
+        self.approximate_size
+            .fetch_add(data.len(), Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn sync_wal(&self) -> Result<()> {
@@ -95,6 +144,8 @@ impl MemTable {
 
     /// Get an iterator over a range of keys.
     pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
+        //let rg = _lower.._upper;
+        //let it = self.map.range(rg);
         unimplemented!()
     }
 
