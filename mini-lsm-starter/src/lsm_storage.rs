@@ -315,7 +315,11 @@ impl LsmStorageInner {
             state.memtable.approximate_size()
         };
         if size >= self.options.target_sst_size {
-            self.force_freeze_memtable(&self.state_lock.lock())?;
+            let lock = self.state_lock.lock();
+            let size = self.state.read().memtable.approximate_size();
+            if size >= self.options.target_sst_size {
+                self.force_freeze_memtable(&lock)?;
+            }
         }
         Ok(())
     }
@@ -328,7 +332,11 @@ impl LsmStorageInner {
             state.memtable.approximate_size()
         };
         if size >= self.options.target_sst_size {
-            self.force_freeze_memtable(&self.state_lock.lock())?;
+            let lock = self.state_lock.lock();
+            let size = self.state.read().memtable.approximate_size();
+            if size >= self.options.target_sst_size {
+                self.force_freeze_memtable(&lock)?;
+            }
         }
         Ok(())
     }
